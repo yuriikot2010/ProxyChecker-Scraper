@@ -9,3 +9,4 @@ Put Website to scrape proxies from at /storage/proxyscrapelinks.txt
 proxies will save at 
 proxy.txt (unchecked)
 valid_proxy.txt (checked)
+and maybe npm install
