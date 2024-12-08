@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline-sync');
 const pLimit = require('p-limit');
+const socks = require('socks-proxy-agent'); // Required for SOCKS proxies
 
 const linksFilePath = path.join(__dirname, 'storage/proxyscrapelinks.txt');
 const proxiesFilePath = path.join(__dirname, 'proxy.txt');
@@ -12,12 +13,13 @@ const MAX_CONCURRENCY = 5000; // Maximum concurrent threads
 const TIMEOUT = 5000; // Timeout for each proxy check
 const BATCH_SIZE = 10000; // Number of proxies per batch
 
-async function fetchWithTimeout(url, timeout) {
+// Helper function to make requests with timeout
+async function fetchWithTimeout(url, timeout, agent) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
-        const response = await fetch(url, { signal: controller.signal });
+        const response = await fetch(url, { signal: controller.signal, agent: agent });
         return response.ok;
     } catch {
         return false;
@@ -26,6 +28,7 @@ async function fetchWithTimeout(url, timeout) {
     }
 }
 
+// Function to read proxies from the file
 function readProxiesFromFile() {
     try {
         if (fs.existsSync(proxiesFilePath)) {
@@ -38,16 +41,57 @@ function readProxiesFromFile() {
     }
 }
 
+// Delete a file if it exists
 function deleteFile(filePath) {
     if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
     }
 }
 
+// Function to validate the proxy format (IP:PORT)
 function isValidProxyFormat(proxy) {
     return /^(\d{1,3}\.){3}\d{1,3}:\d+$/.test(proxy);
 }
 
+// Function to check the protocol for each proxy
+async function checkProtocol(proxy) {
+    const [ip, port] = proxy.split(':');
+    const httpUrl = `http://${ip}:${port}`;
+    const httpsUrl = `https://${ip}:${port}`;
+    const timeoutUrl = `http://${ip}:${port}`; // Used for SOCKS proxy validation
+
+    // Check HTTP
+    try {
+        const isHttpValid = await fetchWithTimeout(httpUrl, TIMEOUT);
+        if (isHttpValid) return 'http';
+    } catch {}
+
+    // Check HTTPS
+    try {
+        const isHttpsValid = await fetchWithTimeout(httpsUrl, TIMEOUT);
+        if (isHttpsValid) return 'https';
+    } catch {}
+
+    // Check SOCKS4
+    try {
+        const socks4Url = `socks4://${ip}:${port}`;
+        const socks4Agent = new socks.SocksProxyAgent(socks4Url);
+        const isSocks4Valid = await fetchWithTimeout(timeoutUrl, TIMEOUT, socks4Agent);
+        if (isSocks4Valid) return 'socks4';
+    } catch {}
+
+    // Check SOCKS5
+    try {
+        const socks5Url = `socks5://${ip}:${port}`;
+        const socks5Agent = new socks.SocksProxyAgent(socks5Url);
+        const isSocks5Valid = await fetchWithTimeout(timeoutUrl, TIMEOUT, socks5Agent);
+        if (isSocks5Valid) return 'socks5';
+    } catch {}
+
+    return 'unknown';
+}
+
+// Function to check proxies
 async function checkProxies() {
     const proxies = readProxiesFromFile();
     if (proxies.length === 0) {
@@ -72,15 +116,14 @@ async function checkProxies() {
             }
             checkedProxies.add(proxy);
 
-            const [ip, port] = proxy.split(':');
-            const isValid = await fetchWithTimeout(`http://${ip}:${port}`, TIMEOUT);
-
-            if (isValid) {
-                validCount++;
-                validProxyStream.write(proxy + '\n');
-            } else {
+            const protocol = await checkProtocol(proxy); // Check the protocol
+            if (protocol === 'unknown') {
                 invalidCount++;
+                return;
             }
+
+            validCount++;
+            validProxyStream.write(`${protocol}://${proxy}\n`);  // Save proxy with its detected protocol
         })
     );
 
@@ -111,6 +154,7 @@ async function checkProxies() {
     console.log(`Invalid proxies: ${invalidCount}`);
 }
 
+// Function to scrape proxies
 async function scrapeProxies() {
     deleteFile(proxiesFilePath); // Delete previous proxies
     const links = fs.existsSync(linksFilePath)
@@ -140,6 +184,7 @@ async function scrapeProxies() {
     console.log(`Saved ${allProxies.size} unique proxies to proxy.txt.`);
 }
 
+// Function to display the menu
 function displayMenu() {
     console.clear();
     console.log("=== Proxy Scraper Menu ===");
@@ -149,6 +194,7 @@ function displayMenu() {
     console.log("==========================");
 }
 
+// Main function to control the flow
 async function main() {
     while (true) {
         displayMenu();
